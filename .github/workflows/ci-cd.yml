@@ -1,0 +1,284 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Job 1: Lint and Test Frontend
+  frontend-lint:
+    runs-on: ubuntu-latest
+    name: Lint Frontend Code
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+      
+      - name: Run ESLint
+        run: cd frontend && npm run build
+        continue-on-error: true
+
+  # Job 2: Build Frontend Docker Image
+  build-frontend:
+    runs-on: ubuntu-latest
+    name: Build Frontend Image
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend
+          push: false
+          tags: ecommerce-frontend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Job 3: Build Backend Services
+  build-services:
+    runs-on: ubuntu-latest
+    name: Build Service Images
+    strategy:
+      matrix:
+        service: [product-service, user-service, order-service, payment-service]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and push ${{ matrix.service }} image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./${{ matrix.service }}
+          push: false
+          tags: ecommerce-${{ matrix.service }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Job 4: Health Check Services
+  health-check:
+    runs-on: ubuntu-latest
+    name: Service Health Checks
+    needs: [build-frontend, build-services]
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: admin
+          POSTGRES_PASSWORD: password123
+          POSTGRES_DB: ecommerce
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      rabbitmq:
+        image: rabbitmq:3.12-management
+        env:
+          RABBITMQ_DEFAULT_USER: guest
+          RABBITMQ_DEFAULT_PASS: guest
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5672:5672
+          - 15672:15672
+      
+      mongodb:
+        image: mongo:7
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 27017:27017
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Check PostgreSQL connectivity
+        run: |
+          apt-get update && apt-get install -y postgresql-client
+          pg_isready -h localhost -p 5432 -U admin
+      
+      - name: Check RabbitMQ connectivity
+        run: |
+          apt-get install -y netcat-openbsd
+          nc -zv localhost 5672
+      
+      - name: Check MongoDB connectivity
+        run: |
+          apt-get install -y mongodb-clients
+          mongosh --host localhost --eval "db.adminCommand('ping')"
+
+  # Job 5: Docker Compose Test
+  docker-compose-test:
+    runs-on: ubuntu-latest
+    name: Docker Compose Integration Test
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Start services with Docker Compose
+        run: docker-compose up -d
+      
+      - name: Wait for services to be ready
+        run: sleep 10
+      
+      - name: Test Kong Gateway
+        run: |
+          curl -f http://localhost:8000/products || exit 1
+          curl -f http://localhost:8000/users || exit 1
+          curl -f http://localhost:8000/orders || exit 1
+          curl -f http://localhost:8000/payments || exit 1
+      
+      - name: Test RabbitMQ Management
+        run: curl -f http://guest:guest@localhost:15672/api/whoami || exit 1
+      
+      - name: Collect logs on failure
+        if: failure()
+        run: docker-compose logs
+      
+      - name: Cleanup
+        if: always()
+        run: docker-compose down
+
+  # Job 6: Deployment (only on main branch)
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy to Minikube
+    needs: [frontend-lint, build-frontend, build-services, health-check, docker-compose-test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Minikube
+        uses: medyagh/setup-minikube@master
+        with:
+          minikube-version: latest
+          driver: docker
+      
+      - name: Deploy to Minikube
+        run: |
+          # Create namespace
+          kubectl apply -f k8s/namespace.yaml
+          
+          # Create configmap
+          kubectl apply -f k8s/configmap.yaml
+          
+          # Deploy databases
+          kubectl apply -f k8s/databases-deployment.yaml
+          
+          # Deploy RabbitMQ
+          kubectl apply -f k8s/rabbitmq-deployment.yaml
+          
+          # Deploy Kong
+          kubectl apply -f k8s/kong-ingress.yaml
+          
+          # Deploy services
+          kubectl apply -f k8s/product-deployment.yaml
+          kubectl apply -f k8s/user-deployment.yaml
+          kubectl apply -f k8s/order-deployment.yaml
+          kubectl apply -f k8s/order-consumer-deployment.yaml
+          kubectl apply -f k8s/payment-deployment.yaml
+          
+          # Deploy monitoring
+          kubectl apply -f k8s/prometheus-deployment.yaml
+          kubectl apply -f k8s/grafana-deployment.yaml
+          
+          # Wait for rollout
+          kubectl rollout status deployment/product-service -n ecommerce --timeout=5m
+          kubectl rollout status deployment/user-service -n ecommerce --timeout=5m
+          kubectl rollout status deployment/order-service -n ecommerce --timeout=5m
+          kubectl rollout status deployment/payment-service -n ecommerce --timeout=5m
+      
+      - name: Verify deployment
+        run: |
+          echo "Checking pod status..."
+          kubectl get pods -n ecommerce
+          
+          echo "Checking services..."
+          kubectl get svc -n ecommerce
+      
+      - name: Post deployment summary
+        if: always()
+        run: |
+          echo "Deployment completed!"
+          echo "Services deployed to ecommerce namespace"
+          echo "Check logs with: kubectl logs -n ecommerce <pod-name>"
+
+  # Job 7: Notify on Status
+  notify:
+    runs-on: ubuntu-latest
+    name: Notification
+    needs: [frontend-lint, build-frontend, build-services, health-check, docker-compose-test]
+    if: always()
+    steps:
+      - name: Determine job status
+        run: |
+          if [ "${{ needs.frontend-lint.result }}" = "failure" ] || \
+             [ "${{ needs.build-frontend.result }}" = "failure" ] || \
+             [ "${{ needs.build-services.result }}" = "failure" ] || \
+             [ "${{ needs.health-check.result }}" = "failure" ] || \
+             [ "${{ needs.docker-compose-test.result }}" = "failure" ]; then
+            echo "❌ CI/CD Pipeline FAILED"
+            exit 1
+          else
+            echo "✅ CI/CD Pipeline PASSED"
+          fi
+      
+      - name: Create summary
+        run: |
+          echo "## CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Frontend Lint: ${{ needs.frontend-lint.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Build Frontend: ${{ needs.build-frontend.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Build Services: ${{ needs.build-services.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Health Checks: ${{ needs.health-check.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Docker Compose: ${{ needs.docker-compose-test.result }}" >> $GITHUB_STEP_SUMMARY

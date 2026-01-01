@@ -1,0 +1,65 @@
+{
+  "dashboard": {
+    "title": "Payment Processing Metrics",
+    "description": "Payment success rates, amounts, and volumes",
+    "tags": ["ecommerce", "payments"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "Total Payments Processed",
+        "targets": [
+          {
+            "expr": "sum(payments_total)",
+            "legendFormat": "Total Payments"
+          }
+        ],
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}
+      },
+      {
+        "title": "Payment Success Rate (%)",
+        "targets": [
+          {
+            "expr": "sum(payments_total{status=\"completed\"}) / sum(payments_total) * 100",
+            "legendFormat": "Success %"
+          }
+        ],
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0}
+      },
+      {
+        "title": "Total Payment Amount",
+        "targets": [
+          {
+            "expr": "sum(payments_amount_total)",
+            "legendFormat": "Total Amount"
+          }
+        ],
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0}
+      },
+      {
+        "title": "Payments by Status",
+        "targets": [
+          {
+            "expr": "sum(payments_total) by (status)",
+            "legendFormat": "{{status}}"
+          }
+        ],
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4}
+      },
+      {
+        "title": "Payment Processing Rate (per 5min)",
+        "targets": [
+          {
+            "expr": "rate(payments_total[5m])",
+            "legendFormat": "{{status}}"
+          }
+        ],
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4}
+      }
+    ]
+  }
+}

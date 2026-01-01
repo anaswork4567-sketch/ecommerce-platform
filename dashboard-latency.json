@@ -1,0 +1,32 @@
+{
+  "dashboard": {
+    "title": "Request Latency & Error Rates",
+    "description": "HTTP request latency and error rate metrics by service",
+    "tags": ["ecommerce", "performance"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "P95 Request Latency",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, http_request_duration_seconds_bucket)",
+            "legendFormat": "{{route}}"
+          }
+        ],
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "title": "Error Rate (5xx/sec)",
+        "targets": [
+          {
+            "expr": "rate(http_request_duration_seconds_count{status_code=~\"5..\"}[5m])",
+            "legendFormat": "{{route}}"
+          }
+        ],
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      }
+    ]
+  }
+}

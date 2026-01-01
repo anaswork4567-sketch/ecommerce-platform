@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "amqplib": "^0.10.9",
+    "axios": "^1.13.2"
+  }
+}

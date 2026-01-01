@@ -1,0 +1,58 @@
+name: Quick Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy to ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Minikube
+        uses: medyagh/setup-minikube@master
+      
+      - name: Deploy services
+        run: |
+          echo "Deploying to ${{ inputs.environment }}..."
+          
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/databases-deployment.yaml
+          kubectl apply -f k8s/rabbitmq-deployment.yaml
+          kubectl apply -f k8s/kong-ingress.yaml
+          kubectl apply -f k8s/product-deployment.yaml
+          kubectl apply -f k8s/user-deployment.yaml
+          kubectl apply -f k8s/order-deployment.yaml
+          kubectl apply -f k8s/order-consumer-deployment.yaml
+          kubectl apply -f k8s/payment-deployment.yaml
+          kubectl apply -f k8s/prometheus-deployment.yaml
+          kubectl apply -f k8s/grafana-deployment.yaml
+      
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/product-service -n ecommerce
+          kubectl rollout status deployment/user-service -n ecommerce
+          kubectl rollout status deployment/order-service -n ecommerce
+          kubectl rollout status deployment/payment-service -n ecommerce
+      
+      - name: Health check
+        run: |
+          kubectl get pods -n ecommerce
+          kubectl get svc -n ecommerce
+      
+      - name: Summary
+        run: |
+          echo "✅ Deployed to ${{ inputs.environment }}"
+          echo "Pod Status:"
+          kubectl get pods -n ecommerce --no-headers
