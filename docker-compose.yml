@@ -159,6 +159,21 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Frontend (React)
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - PORT=3000
+    networks:
+      - ecommerce-network
+    container_name: frontend
+    depends_on:
+      - kong
+    restart: unless-stopped
+
 networks:
   ecommerce-network:
     driver: bridge
