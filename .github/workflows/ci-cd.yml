@@ -283,4 +283,3 @@ jobs:
           echo "Docker Compose Test: ${{ needs.docker-compose-test.result }}"
           echo "========================================="
         continue-on-error: true
-          echo "✅ Docker Compose: ${{ needs.docker-compose-test.result }}" >> $GITHUB_STEP_SUMMARY
