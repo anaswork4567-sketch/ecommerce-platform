@@ -2,11 +2,15 @@
 const express = require("express");
 const cors = require("cors");
 const promClient = require("prom-client");
-const { startOrderConsumer } = require("./rabbitmq_consumer.js");
+const { startOrderConsumer, getRabbitMQStatus } = require("./rabbitmq_consumer.js");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Health check state
+let rabbitmqConnected = false;
+let rabbitmqConnectedTime = null;
 
 // Prometheus metrics
 const register = new promClient.Registry();
@@ -84,7 +88,36 @@ app.post("/payments", (req, res) => {
 });
 
 app.get("/health", (req, res) => {
-  res.json({ status: "ok" });
+  const rabbitmqStatus = getRabbitMQStatus();
+  const health = {
+    status: rabbitmqStatus.connected ? "healthy" : "unhealthy",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    rabbitmq: {
+      connected: rabbitmqStatus.connected,
+      attempts: rabbitmqStatus.attempts,
+      lastError: rabbitmqStatus.lastError,
+    },
+    payments: {
+      total: payments.length,
+      completed: payments.filter(p => p.status === "completed").length,
+    },
+  };
+
+  // Liveness check - return 200 if process is alive
+  const statusCode = 200;
+  res.status(statusCode).json(health);
+});
+
+// Readiness check - return 200 only if ready to accept traffic
+app.get("/ready", (req, res) => {
+  const rabbitmqStatus = getRabbitMQStatus();
+  if (rabbitmqStatus.connected) {
+    res.status(200).json({ ready: true, rabbitmq: true });
+  } else {
+    res.status(503).json({ ready: false, rabbitmq: false, message: "RabbitMQ not connected yet" });
+  }
 });
 
 // Prometheus metrics endpoint
@@ -96,5 +129,33 @@ app.get("/metrics", (req, res) => {
 // Start RabbitMQ consumer and let it update `payments`
 startOrderConsumer(payments);
 
+// Graceful shutdown handling - will be called when server starts
+function setupGracefulShutdown(server) {
+  let isShuttingDown = false;
 
+  function gracefulShutdown(signal) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    console.log(`\n[Shutdown] Received ${signal} signal. Starting graceful shutdown...`);
+    
+    // Stop accepting new connections
+    server.close(() => {
+      console.log("[Shutdown] ✅ HTTP server closed");
+      process.exit(0);
+    });
+
+    // Force exit after 45 seconds if graceful shutdown doesn't complete
+    setTimeout(() => {
+      console.error("[Shutdown] ❌ Graceful shutdown timeout. Force exiting...");
+      process.exit(1);
+    }, 45000);
+  }
+
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+}
+
+// Export for use in server.js
+app.setupGracefulShutdown = setupGracefulShutdown;
 module.exports = app;
